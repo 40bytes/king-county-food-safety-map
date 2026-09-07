@@ -24,7 +24,17 @@ A fresh checkout works offline after dependencies are installed: if `public/data
 
 ## Architecture and data flow
 
-The Vue 3 single-page app loads a compact build-time facility snapshot and indexes it locally. Tokenized search, ranking, rating and optional current-map-area filters, and MapLibre's native GeoJSON clustering all run in the browser. On mobile, filters are tucked behind the search control and results start in a collapsed three-state bottom sheet; swipe its header or tap it to move between collapsed, half, and expanded states. Selecting a facility fetches its qualifying inspections from ArcGIS layer 1; opening an inspection fetches violations from layer 2. Deep links use `?facility={Business_Record_ID}` and the History API.
+The Vue 3 single-page app loads a compact build-time facility snapshot and indexes it locally. Tokenized search, ranking, rating and optional current-map-area filters, and MapLibre's native GeoJSON clustering all run in the browser. On mobile, filters are tucked behind the search control and results start in a collapsed three-state bottom sheet. Selecting a facility fetches its qualifying inspections from ArcGIS layer 1; opening an inspection fetches violations from layer 2. Deep links use `?facility={Business_Record_ID}` and the History API.
+
+### Mobile bottom sheet
+
+- Drag **the header** to follow your finger continuously, with gentle, bounded resistance beyond collapsed/expanded. Release snaps to collapsed, half, or expanded using the last 100ms of movement and a 180ms velocity projection; pausing before release discards earlier flick momentum.
+- Tap the header, or focus it and press Enter/Space, to cycle sizes. A drag's follow-up click is suppressed without suppressing keyboard activation or the next physical tap.
+- Settling uses an eased height transition; grabbing the header again starts from its current rendered height. Reduced-motion preferences make settling effectively immediate while retaining direct finger tracking.
+- Results and details keep native scrolling: dragging their content does **not** resize the sheet. There is no content-scroll-to-sheet gesture handoff.
+- Snap heights live in CSS, including dynamic viewport units, safe-area insets, and the narrow-screen adjustment. Hidden sizing probes supply resolved pixel heights to the gesture code. A sizing change cancels an active drag back to its logical snap state; pointer cancellation or lost capture does the same, without fling momentum. Secondary pointers cannot take over the gesture.
+
+`npm test` includes pure drag-physics regression tests for resistance, recent velocity, pauses/reversals, projection, and coincident snap heights. These tests do not simulate browser pointer capture, native scrolling, or CSS transitions; physical iOS interaction has not been verified. Device checks should cover flick/hold/reversal, interruption during settling, canceled/multi-touch gestures, drag then tap, keyboard activation, rotation, and reduced motion.
 
 `scripts/generate-data.mjs` requests layer 0 in deterministic `OBJECTID ASC` pages of 2,000, limits records to active businesses, requests EPSG:4326 geometry, validates essential fields, and atomically writes `public/data/facilities.json`. That output is intentionally ignored by Git. Generation is not part of `build`, so an upstream outage cannot break a build from a clean checkout.
 

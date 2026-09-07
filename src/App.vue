@@ -5,6 +5,7 @@ import { fetchInspections, fetchViolations } from './api/arcgis'
 import { loadFacilities } from './data/loadFacilities'
 import { filterAndRankFacilities } from './domain/search'
 import { normalizeGrade, ratingClass } from './domain/ratings'
+import { useSheetDrag } from './composables/useSheetDrag'
 import { ratingLabels, type Facility, type Inspection, type Rating, type Violation } from './types'
 
 const RESULT_LIMIT = 150
@@ -19,15 +20,13 @@ const loading = ref(true)
 const loadError = ref('')
 const synthetic = ref(false)
 const shareStatus = ref('')
-const sheetState = ref<'collapsed' | 'half' | 'expanded'>('collapsed')
+const { sheetElement, sheetState, startSheetDrag, moveSheetDrag, endSheetDrag, cancelSheetDrag, activateSheet } = useSheetDrag()
 const filterMenuOpen = ref(false)
 const areaBounds = ref<{ west: number; east: number; south: number; north: number } | null>(null)
 const mapAreaChanged = ref(false)
 let map: MapLibreMap | undefined
 let debounceTimer: ReturnType<typeof setTimeout> | undefined
 let inspectionController: AbortController | undefined
-let sheetDragStartY: number | null = null
-let ignoreSheetClick = false
 
 interface InspectionState { status: 'idle' | 'loading' | 'loaded' | 'error'; inspections: Inspection[]; error: string }
 interface ViolationState { status: 'loading' | 'loaded' | 'error'; violations: Violation[]; error: string }
@@ -205,44 +204,6 @@ function clearSearch(): void {
   searchInput.value?.focus()
 }
 
-function cycleSheet(): void {
-  const states = ['collapsed', 'half', 'expanded'] as const
-  sheetState.value = states[(states.indexOf(sheetState.value) + 1) % states.length] ?? 'half'
-}
-
-function moveSheet(direction: -1 | 1): void {
-  const states = ['collapsed', 'half', 'expanded'] as const
-  const current = states.indexOf(sheetState.value)
-  sheetState.value = states[Math.max(0, Math.min(states.length - 1, current + direction))] ?? 'half'
-}
-
-function startSheetDrag(event: PointerEvent): void {
-  if (event.button !== 0) return
-  sheetDragStartY = event.clientY
-  event.currentTarget instanceof HTMLElement && event.currentTarget.setPointerCapture(event.pointerId)
-}
-
-function endSheetDrag(event: PointerEvent): void {
-  if (sheetDragStartY === null) return
-  const distance = event.clientY - sheetDragStartY
-  sheetDragStartY = null
-  if (Math.abs(distance) < 36) return
-  moveSheet(distance < 0 ? 1 : -1)
-  ignoreSheetClick = true
-}
-
-function cancelSheetDrag(): void {
-  sheetDragStartY = null
-}
-
-function activateSheet(): void {
-  if (ignoreSheetClick) {
-    ignoreSheetClick = false
-    return
-  }
-  cycleSheet()
-}
-
 async function loadInspections(recordId: string): Promise<void> {
   const current = inspectionStates[recordId]
   if (current?.status === 'loaded' || current?.status === 'loading') return
@@ -357,8 +318,9 @@ onBeforeUnmount(() => {
         </div>
       </div>
 
-      <section class="sheet" :class="`sheet-${sheetState}`" :aria-label="selectedFacility ? 'Facility details' : 'Facility results'">
-        <button type="button" class="sheet-header" :aria-expanded="sheetState !== 'collapsed'" :aria-label="`Results sheet: ${sheetState}. Swipe or activate to change size.`" @pointerdown="startSheetDrag" @pointerup="endSheetDrag" @pointercancel="cancelSheetDrag" @click="activateSheet">
+      <section ref="sheetElement" class="sheet" :class="`sheet-${sheetState}`" :aria-label="selectedFacility ? 'Facility details' : 'Facility results'">
+        <span v-for="size in ['collapsed', 'half', 'expanded']" :key="size" class="sheet-size-probe" :data-sheet-size="size" aria-hidden="true" />
+        <button type="button" class="sheet-header" :aria-expanded="sheetState !== 'collapsed'" :aria-label="`Results sheet: ${sheetState}. Drag this header or activate to change size.`" @pointerdown="startSheetDrag" @pointermove="moveSheetDrag" @pointerup="endSheetDrag" @pointercancel="cancelSheetDrag" @lostpointercapture="cancelSheetDrag" @click="activateSheet">
           <span class="drag-handle" aria-hidden="true" />
           <span v-if="selectedFacility">Facility details</span>
           <span v-else><strong>{{ rankedFacilities.length.toLocaleString() }}</strong> {{ rankedFacilities.length === 1 ? 'facility' : 'facilities' }}</span>
