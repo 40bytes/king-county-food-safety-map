@@ -1,0 +1,47 @@
+[
+  {
+    "objectId": 900000001,
+    "recordId": "SYNTHETIC-CAFE-001",
+    "name": "Rainy Day Test Cafe",
+    "programIdentifier": "SYNTHETIC-CAFE-001-PRG",
+    "establishmentDescription": "Synthetic fixture - not a real business",
+    "address": "100 Example Avenue",
+    "city": "Seattle",
+    "phone": "",
+    "zip": "98101",
+    "grade": "Excellent",
+    "updatedAt": 1767225600000,
+    "longitude": -122.335,
+    "latitude": 47.609
+  },
+  {
+    "objectId": 900000002,
+    "recordId": "SYNTHETIC-MARKET-002",
+    "name": "Cedar Test Market",
+    "programIdentifier": "SYNTHETIC-MARKET-002-PRG",
+    "establishmentDescription": "Synthetic fixture - not a real business",
+    "address": "200 Sample Street",
+    "city": "Bellevue",
+    "phone": "",
+    "zip": "98004",
+    "grade": "Good",
+    "updatedAt": 1767225600000,
+    "longitude": -122.201,
+    "latitude": 47.61
+  },
+  {
+    "objectId": 900000003,
+    "recordId": "SYNTHETIC-DELI-003",
+    "name": "Sound Test Deli",
+    "programIdentifier": "SYNTHETIC-DELI-003-PRG",
+    "establishmentDescription": "Synthetic fixture - not a real business",
+    "address": "300 Placeholder Road",
+    "city": "Renton",
+    "phone": "",
+    "zip": "98057",
+    "grade": null,
+    "updatedAt": 1767225600000,
+    "longitude": -122.215,
+    "latitude": 47.482
+  }
+]

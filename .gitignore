@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.vite/
+coverage/
+public/data/facilities.json
+public/data/facilities.json.tmp
+*.local
+.DS_Store
