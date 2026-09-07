@@ -5,6 +5,8 @@ import { fetchInspections, fetchViolations } from './api/arcgis'
 import { loadFacilities } from './data/loadFacilities'
 import { filterAndRankFacilities } from './domain/search'
 import { normalizeGrade, ratingClass } from './domain/ratings'
+import { groupFacilities, OVERLAP_ZOOM } from './domain/overlap'
+import { OverlapMarkers } from './overlapMarkers'
 import { useSheetDrag } from './composables/useSheetDrag'
 import { ratingLabels, type Facility, type Inspection, type Rating, type Violation } from './types'
 
@@ -15,6 +17,7 @@ const query = ref('')
 const debouncedQuery = ref('')
 const facilities = ref<Facility[]>([])
 const selectedRecordId = ref<string | null>(null)
+const selectedGroupId = ref<string | null>(null)
 const enabledRatings = ref(new Set<Rating>(ratingLabels))
 const loading = ref(true)
 const loadError = ref('')
@@ -23,6 +26,8 @@ const shareStatus = ref('')
 const { sheetElement, sheetState, startSheetDrag, moveSheetDrag, endSheetDrag, cancelSheetDrag, activateSheet } = useSheetDrag()
 const filterMenuOpen = ref(false)
 let map: MapLibreMap | undefined
+let overlapMarkers: OverlapMarkers | undefined
+let closeZoom = false
 let debounceTimer: ReturnType<typeof setTimeout> | undefined
 let inspectionController: AbortController | undefined
 
@@ -33,7 +38,10 @@ const violationStates = reactive<Record<string, ViolationState>>({})
 
 const selectedFacility = computed(() => facilities.value.find(({ recordId }) => recordId === selectedRecordId.value) ?? null)
 const rankedFacilities = computed(() => filterAndRankFacilities(facilities.value, debouncedQuery.value, enabledRatings.value))
-const visibleFacilities = computed(() => rankedFacilities.value.slice(0, RESULT_LIMIT))
+const overlapGroups = computed(() => groupFacilities(rankedFacilities.value))
+const groupedRecordIds = computed(() => new Set(overlapGroups.value.flatMap((group) => group.facilities.map((facility) => facility.recordId))))
+const selectedGroup = computed(() => overlapGroups.value.find((group) => group.id === selectedGroupId.value))
+const visibleFacilities = computed(() => selectedGroup.value?.facilities ?? rankedFacilities.value.slice(0, RESULT_LIMIT))
 const ratingCounts = computed(() => Object.fromEntries(ratingLabels.map((rating) => [
   rating, facilities.value.filter((facility) => normalizeGrade(facility.grade) === rating).length,
 ])) as Record<Rating, number>)
@@ -44,7 +52,10 @@ watch(query, (value) => {
   debounceTimer = setTimeout(() => { debouncedQuery.value = value }, 120)
 })
 
-watch(rankedFacilities, updateMapData)
+watch(rankedFacilities, () => {
+  selectedGroupId.value = null
+  updateMapData()
+})
 watch(selectedFacility, updateSelectedMapData)
 
 function facilityGeoJson() {
@@ -55,6 +66,7 @@ function facilityGeoJson() {
       geometry: { type: 'Point' as const, coordinates: [facility.longitude, facility.latitude] },
       properties: {
         recordId: facility.recordId,
+        overlapping: groupedRecordIds.value.has(facility.recordId),
         name: facility.name,
         rating: normalizeGrade(facility.grade),
         symbol: normalizeGrade(facility.grade) === 'Needs to Improve' ? '!' : normalizeGrade(facility.grade).charAt(0),
@@ -66,14 +78,31 @@ function facilityGeoJson() {
 function updateMapData(): void {
   const source = map?.getSource('facilities') as GeoJSONSource | undefined
   source?.setData(facilityGeoJson())
+  overlapMarkers?.setGroups(overlapGroups.value)
+  updateSelectedMapData()
+}
+
+function updateOverlapZoom(): void {
+  const next = (map?.getZoom() ?? 0) >= OVERLAP_ZOOM
+  if (next === closeZoom) return
+  closeZoom = next
+  for (const layer of ['facility-points', 'facility-symbols', 'facility-names']) {
+    map?.setFilter(layer, closeZoom
+      ? ['all', ['!', ['has', 'point_count']], ['!=', ['get', 'overlapping'], true]]
+      : ['!', ['has', 'point_count']])
+  }
+  updateSelectedMapData()
 }
 
 function updateSelectedMapData(): void {
   const source = map?.getSource('selected-facility') as GeoJSONSource | undefined
   const facility = selectedFacility.value
+  overlapMarkers?.setSelected(facility?.recordId ?? null)
+  const showHalo = facility && rankedFacilities.value.some(({ recordId }) => recordId === facility.recordId)
+    && (!closeZoom || !groupedRecordIds.value.has(facility.recordId))
   source?.setData({
     type: 'FeatureCollection',
-    features: facility ? [{ type: 'Feature', geometry: { type: 'Point', coordinates: [facility.longitude, facility.latitude] }, properties: {} }] : [],
+    features: showHalo ? [{ type: 'Feature', geometry: { type: 'Point', coordinates: [facility.longitude, facility.latitude] }, properties: {} }] : [],
   })
 }
 
@@ -138,17 +167,30 @@ function initializeMap(): void {
       paint: { 'circle-radius': 18, 'circle-color': '#fff', 'circle-opacity': 0.9, 'circle-stroke-color': '#102a2e', 'circle-stroke-width': 4 },
     })
     map?.addLayer({ id: 'selected-center', type: 'circle', source: 'selected-facility', paint: { 'circle-radius': 7, 'circle-color': '#e85d3f' } })
+    if (!map) return
+    overlapMarkers = new OverlapMarkers(map, selectFacility, openGroup)
+    overlapMarkers.setGroups(overlapGroups.value)
+    updateOverlapZoom()
     updateSelectedMapData()
-    map?.on('click', 'clusters', async (event) => {
-      const feature = map?.queryRenderedFeatures(event.point, { layers: ['clusters'] })[0]
-      const clusterId = feature?.properties?.cluster_id
-      if (typeof clusterId !== 'number' || feature?.geometry.type !== 'Point') return
+    map.on('zoom', updateOverlapZoom)
+    // One hit test/handler: a name and pin can both be under the pointer.
+    map.on('click', async (event) => {
+      const feature = map?.queryRenderedFeatures(event.point, { layers: ['clusters', 'facility-points', 'facility-symbols', 'facility-names'] })[0]
+      if (!feature) return
+      if (feature.layer.id !== 'clusters') {
+        selectFromMap(feature.properties?.recordId)
+        return
+      }
+      const clusterId = feature.properties?.cluster_id
+      if (typeof clusterId !== 'number' || feature.geometry.type !== 'Point') return
       const source = map?.getSource('facilities') as GeoJSONSource | undefined
-      const zoom = await source?.getClusterExpansionZoom(clusterId)
-      if (zoom !== undefined) map?.easeTo({ center: feature.geometry.coordinates as [number, number], zoom, duration: reducedMotion() ? 0 : 500 })
+      try {
+        const zoom = await source?.getClusterExpansionZoom(clusterId)
+        if (zoom !== undefined) map?.easeTo({ center: feature.geometry.coordinates as [number, number], zoom, duration: reducedMotion() ? 0 : 500 })
+      } catch (error) {
+        console.warn('Could not expand facility cluster; try selecting it again.', error)
+      }
     })
-    map?.on('click', 'facility-points', (event) => selectFromMap(event.features?.[0]?.properties?.recordId))
-    map?.on('click', 'facility-names', (event) => selectFromMap(event.features?.[0]?.properties?.recordId))
     for (const layer of ['clusters', 'facility-points', 'facility-symbols', 'facility-names']) {
       map?.on('mouseenter', layer, () => { if (map) map.getCanvas().style.cursor = 'pointer' })
       map?.on('mouseleave', layer, () => { if (map) map.getCanvas().style.cursor = '' })
@@ -159,6 +201,13 @@ function initializeMap(): void {
 
 function selectFromMap(recordId: unknown): void {
   if (typeof recordId === 'string') selectFacility(recordId)
+}
+
+function openGroup(groupId: string): void {
+  if (!overlapGroups.value.some((group) => group.id === groupId)) return
+  if (selectedRecordId.value) closeDetails()
+  selectedGroupId.value = groupId
+  focusFirstResult()
 }
 
 function selectFacility(recordId: string, updateHistory = true): void {
@@ -186,13 +235,15 @@ function setUrlFacility(recordId: string | null): void {
 }
 
 function restoreFromUrl(): void {
+  selectedGroupId.value = null
   const recordId = new URL(window.location.href).searchParams.get('facility')
   if (recordId && facilities.value.some((facility) => facility.recordId === recordId)) selectFacility(recordId, false)
   else closeDetails(false)
 }
 
 function flyToSelected(animate = true): void {
-  if (!selectedFacility.value || !map?.loaded()) return
+  // A pending source update makes loaded() false even though the camera is ready.
+  if (!selectedFacility.value || !map?.getSource('facilities')) return
   map.easeTo({ center: [selectedFacility.value.longitude, selectedFacility.value.latitude], zoom: Math.max(map.getZoom(), 14), duration: animate && !reducedMotion() ? 650 : 0, padding: window.innerWidth < 760 ? { bottom: 320, top: 160, left: 0, right: 0 } : { left: 430, top: 0, bottom: 0, right: 0 } })
 }
 
@@ -280,6 +331,7 @@ onBeforeUnmount(() => {
   clearTimeout(debounceTimer)
   inspectionController?.abort()
   window.removeEventListener('popstate', restoreFromUrl)
+  overlapMarkers?.destroy()
   map?.remove()
 })
 </script>
@@ -317,14 +369,21 @@ onBeforeUnmount(() => {
         <button type="button" class="sheet-header" :aria-expanded="sheetState !== 'collapsed'" :aria-label="`Results sheet: ${sheetState}. Drag this header or activate to change size.`" @pointerdown="startSheetDrag" @pointermove="moveSheetDrag" @pointerup="endSheetDrag" @pointercancel="cancelSheetDrag" @lostpointercapture="cancelSheetDrag" @click="activateSheet">
           <span class="drag-handle" aria-hidden="true" />
           <span v-if="selectedFacility">Facility details</span>
+          <span v-else-if="selectedGroup"><strong>{{ selectedGroup.facilities.length }}</strong> places here</span>
           <span v-else><strong>{{ rankedFacilities.length.toLocaleString() }}</strong> {{ rankedFacilities.length === 1 ? 'facility' : 'facilities' }}</span>
           <span class="sheet-state">{{ sheetState }}</span>
         </button>
 
         <div v-if="!selectedFacility" class="explorer">
         <div class="results-summary" aria-live="polite">
-          <span>Showing all of King County</span>
-          <span v-if="rankedFacilities.length > RESULT_LIMIT">| showing first {{ RESULT_LIMIT }}</span>
+          <template v-if="selectedGroup">
+            <span>{{ selectedGroup.facilities.length }} places at this location</span>
+            <button type="button" class="back-button" @click="selectedGroupId = null">Show all results</button>
+          </template>
+          <template v-else>
+            <span>Showing all of King County</span>
+            <span v-if="rankedFacilities.length > RESULT_LIMIT">| showing first {{ RESULT_LIMIT }}</span>
+          </template>
         </div>
         <div v-if="loading" class="state"><span class="spinner" /> Loading facilities...</div>
         <div v-else-if="loadError" class="state error">{{ loadError }}</div>
