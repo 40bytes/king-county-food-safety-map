@@ -55,6 +55,7 @@ function facilityGeoJson() {
       geometry: { type: 'Point' as const, coordinates: [facility.longitude, facility.latitude] },
       properties: {
         recordId: facility.recordId,
+        name: facility.name,
         rating: normalizeGrade(facility.grade),
         symbol: normalizeGrade(facility.grade) === 'Needs to Improve' ? '!' : normalizeGrade(facility.grade).charAt(0),
       },
@@ -117,6 +118,22 @@ function initializeMap(): void {
       layout: { 'text-field': ['get', 'symbol'], 'text-size': 10, 'text-font': ['Noto Sans Bold'] }, paint: { 'text-color': '#fff' },
     })
     map?.addLayer({
+      id: 'facility-names', type: 'symbol', source: 'facilities', minzoom: 14,
+      filter: ['!', ['has', 'point_count']],
+      layout: {
+        'text-field': ['get', 'name'],
+        'text-font': ['Noto Sans Bold'],
+        'text-size': ['interpolate', ['linear'], ['zoom'], 14, 10, 16, 13, 18, 16],
+        'text-variable-anchor': ['left', 'right', 'top', 'bottom'],
+        'text-radial-offset': 1.4,
+        'text-justify': 'auto',
+        'text-max-width': 12,
+        'text-padding': 4,
+        'text-allow-overlap': false,
+      },
+      paint: { 'text-color': '#173532', 'text-halo-color': '#fffdfa', 'text-halo-width': 1.5 },
+    })
+    map?.addLayer({
       id: 'selected-halo', type: 'circle', source: 'selected-facility',
       paint: { 'circle-radius': 18, 'circle-color': '#fff', 'circle-opacity': 0.9, 'circle-stroke-color': '#102a2e', 'circle-stroke-width': 4 },
     })
@@ -131,7 +148,8 @@ function initializeMap(): void {
       if (zoom !== undefined) map?.easeTo({ center: feature.geometry.coordinates as [number, number], zoom, duration: reducedMotion() ? 0 : 500 })
     })
     map?.on('click', 'facility-points', (event) => selectFromMap(event.features?.[0]?.properties?.recordId))
-    for (const layer of ['clusters', 'facility-points', 'facility-symbols']) {
+    map?.on('click', 'facility-names', (event) => selectFromMap(event.features?.[0]?.properties?.recordId))
+    for (const layer of ['clusters', 'facility-points', 'facility-symbols', 'facility-names']) {
       map?.on('mouseenter', layer, () => { if (map) map.getCanvas().style.cursor = 'pointer' })
       map?.on('mouseleave', layer, () => { if (map) map.getCanvas().style.cursor = '' })
     }
