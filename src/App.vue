@@ -19,12 +19,15 @@ const loading = ref(true)
 const loadError = ref('')
 const synthetic = ref(false)
 const shareStatus = ref('')
-const sheetState = ref<'collapsed' | 'half' | 'expanded'>('half')
+const sheetState = ref<'collapsed' | 'half' | 'expanded'>('collapsed')
+const filterMenuOpen = ref(false)
 const areaBounds = ref<{ west: number; east: number; south: number; north: number } | null>(null)
 const mapAreaChanged = ref(false)
 let map: MapLibreMap | undefined
 let debounceTimer: ReturnType<typeof setTimeout> | undefined
 let inspectionController: AbortController | undefined
+let sheetDragStartY: number | null = null
+let ignoreSheetClick = false
 
 interface InspectionState { status: 'idle' | 'loading' | 'loaded' | 'error'; inspections: Inspection[]; error: string }
 interface ViolationState { status: 'loading' | 'loaded' | 'error'; violations: Violation[]; error: string }
@@ -161,7 +164,7 @@ function selectFacility(recordId: string, updateHistory = true): void {
 
 function closeDetails(updateHistory = true): void {
   selectedRecordId.value = null
-  sheetState.value = 'half'
+  sheetState.value = 'collapsed'
   inspectionController?.abort()
   if (updateHistory) setUrlFacility(null)
 }
@@ -205,6 +208,39 @@ function clearSearch(): void {
 function cycleSheet(): void {
   const states = ['collapsed', 'half', 'expanded'] as const
   sheetState.value = states[(states.indexOf(sheetState.value) + 1) % states.length] ?? 'half'
+}
+
+function moveSheet(direction: -1 | 1): void {
+  const states = ['collapsed', 'half', 'expanded'] as const
+  const current = states.indexOf(sheetState.value)
+  sheetState.value = states[Math.max(0, Math.min(states.length - 1, current + direction))] ?? 'half'
+}
+
+function startSheetDrag(event: PointerEvent): void {
+  if (event.button !== 0) return
+  sheetDragStartY = event.clientY
+  event.currentTarget instanceof HTMLElement && event.currentTarget.setPointerCapture(event.pointerId)
+}
+
+function endSheetDrag(event: PointerEvent): void {
+  if (sheetDragStartY === null) return
+  const distance = event.clientY - sheetDragStartY
+  sheetDragStartY = null
+  if (Math.abs(distance) < 36) return
+  moveSheet(distance < 0 ? 1 : -1)
+  ignoreSheetClick = true
+}
+
+function cancelSheetDrag(): void {
+  sheetDragStartY = null
+}
+
+function activateSheet(): void {
+  if (ignoreSheetClick) {
+    ignoreSheetClick = false
+    return
+  }
+  cycleSheet()
 }
 
 async function loadInspections(recordId: string): Promise<void> {
@@ -301,23 +337,28 @@ onBeforeUnmount(() => {
       <div class="search-controls">
         <label class="search-label" for="facility-search">Search facilities</label>
         <div class="search-wrap">
-          <svg aria-hidden="true" viewBox="0 0 24 24"><path d="m21 21-4.35-4.35m2.35-5.15A7.5 7.5 0 1 1 4 11.5a7.5 7.5 0 0 1 15 0Z" /></svg>
+          <svg class="search-icon" aria-hidden="true" viewBox="0 0 24 24"><path d="m21 21-4.35-4.35m2.35-5.15A7.5 7.5 0 1 1 4 11.5a7.5 7.5 0 0 1 15 0Z" /></svg>
           <input id="facility-search" ref="searchInput" v-model="query" type="search" autocomplete="off" enterkeyhint="search" placeholder="Name, address, ZIP..." @keydown.down.prevent="focusFirstResult" />
           <button v-if="query" type="button" class="clear-search" aria-label="Clear facility search" @click="clearSearch">x</button>
-        </div>
-        <div class="filters" aria-label="Filter by food safety rating">
-          <button v-for="rating in ratingLabels" :key="rating" type="button" class="filter-chip" :class="[ratingClass(rating), { off: !enabledRatings.has(rating) }]" :aria-pressed="enabledRatings.has(rating)" @click="toggleRating(rating)">
-            <span class="rating-dot" />{{ rating }}<span class="count">{{ ratingCounts[rating] }}</span>
+          <button type="button" class="filter-menu-button" :class="{ active: areaBounds || enabledRatings.size < ratingLabels.length }" aria-label="Filters and map area" :aria-expanded="filterMenuOpen" aria-controls="filter-panel" @click="filterMenuOpen = !filterMenuOpen">
+            <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M4 7h16M7 12h10M10 17h4" /></svg>
           </button>
         </div>
-        <div class="area-actions">
-          <button v-if="mapAreaChanged || !areaBounds" type="button" @click="searchCurrentArea">Search this area</button>
-          <button v-if="areaBounds" type="button" @click="resetAreaFilter">Show all county</button>
+        <div id="filter-panel" class="filter-panel" :class="{ open: filterMenuOpen }">
+          <div class="filters" aria-label="Filter by food safety rating">
+            <button v-for="rating in ratingLabels" :key="rating" type="button" class="filter-chip" :class="[ratingClass(rating), { off: !enabledRatings.has(rating) }]" :aria-pressed="enabledRatings.has(rating)" @click="toggleRating(rating)">
+              <span class="rating-dot" />{{ rating }}<span class="count">{{ ratingCounts[rating] }}</span>
+            </button>
+          </div>
+          <div class="area-actions">
+            <button v-if="mapAreaChanged || !areaBounds" type="button" @click="searchCurrentArea">Search this area</button>
+            <button v-if="areaBounds" type="button" @click="resetAreaFilter">Show all county</button>
+          </div>
         </div>
       </div>
 
       <section class="sheet" :class="`sheet-${sheetState}`" :aria-label="selectedFacility ? 'Facility details' : 'Facility results'">
-        <button type="button" class="sheet-header" :aria-expanded="sheetState !== 'collapsed'" :aria-label="`Results sheet: ${sheetState}. Activate to change size.`" @click="cycleSheet">
+        <button type="button" class="sheet-header" :aria-expanded="sheetState !== 'collapsed'" :aria-label="`Results sheet: ${sheetState}. Swipe or activate to change size.`" @pointerdown="startSheetDrag" @pointerup="endSheetDrag" @pointercancel="cancelSheetDrag" @click="activateSheet">
           <span class="drag-handle" aria-hidden="true" />
           <span v-if="selectedFacility">Facility details</span>
           <span v-else><strong>{{ rankedFacilities.length.toLocaleString() }}</strong> {{ rankedFacilities.length === 1 ? 'facility' : 'facilities' }}</span>
