@@ -22,8 +22,6 @@ const synthetic = ref(false)
 const shareStatus = ref('')
 const { sheetElement, sheetState, startSheetDrag, moveSheetDrag, endSheetDrag, cancelSheetDrag, activateSheet } = useSheetDrag()
 const filterMenuOpen = ref(false)
-const areaBounds = ref<{ west: number; east: number; south: number; north: number } | null>(null)
-const mapAreaChanged = ref(false)
 let map: MapLibreMap | undefined
 let debounceTimer: ReturnType<typeof setTimeout> | undefined
 let inspectionController: AbortController | undefined
@@ -34,12 +32,7 @@ const inspectionStates = reactive<Record<string, InspectionState>>({})
 const violationStates = reactive<Record<string, ViolationState>>({})
 
 const selectedFacility = computed(() => facilities.value.find(({ recordId }) => recordId === selectedRecordId.value) ?? null)
-const searchedFacilities = computed(() => filterAndRankFacilities(facilities.value, debouncedQuery.value, enabledRatings.value))
-const rankedFacilities = computed(() => {
-  const bounds = areaBounds.value
-  return bounds ? searchedFacilities.value.filter(({ longitude, latitude }) =>
-    longitude >= bounds.west && longitude <= bounds.east && latitude >= bounds.south && latitude <= bounds.north) : searchedFacilities.value
-})
+const rankedFacilities = computed(() => filterAndRankFacilities(facilities.value, debouncedQuery.value, enabledRatings.value))
 const visibleFacilities = computed(() => rankedFacilities.value.slice(0, RESULT_LIMIT))
 const ratingCounts = computed(() => Object.fromEntries(ratingLabels.map((rating) => [
   rating, facilities.value.filter((facility) => normalizeGrade(facility.grade) === rating).length,
@@ -100,7 +93,6 @@ function initializeMap(): void {
     positionOptions: { enableHighAccuracy: true },
     trackUserLocation: false,
   }), 'top-right')
-  map.on('moveend', () => { mapAreaChanged.value = true })
   map.on('load', () => {
     map?.getCanvas().setAttribute('aria-label', 'Interactive map of King County food facilities. Use arrow keys to pan and plus or minus to zoom.')
     map?.addSource('facilities', { type: 'geojson', data: facilityGeoJson(), cluster: true, clusterRadius: 45, clusterMaxZoom: 13 })
@@ -184,18 +176,6 @@ function restoreFromUrl(): void {
 function flyToSelected(animate = true): void {
   if (!selectedFacility.value || !map?.loaded()) return
   map.easeTo({ center: [selectedFacility.value.longitude, selectedFacility.value.latitude], zoom: Math.max(map.getZoom(), 14), duration: animate && !reducedMotion() ? 650 : 0, padding: window.innerWidth < 760 ? { bottom: 320, top: 160, left: 0, right: 0 } : { left: 430, top: 0, bottom: 0, right: 0 } })
-}
-
-function searchCurrentArea(): void {
-  if (!map) return
-  const bounds = map.getBounds()
-  areaBounds.value = { west: bounds.getWest(), east: bounds.getEast(), south: bounds.getSouth(), north: bounds.getNorth() }
-  mapAreaChanged.value = false
-}
-
-function resetAreaFilter(): void {
-  areaBounds.value = null
-  mapAreaChanged.value = false
 }
 
 function clearSearch(): void {
@@ -301,7 +281,7 @@ onBeforeUnmount(() => {
           <svg class="search-icon" aria-hidden="true" viewBox="0 0 24 24"><path d="m21 21-4.35-4.35m2.35-5.15A7.5 7.5 0 1 1 4 11.5a7.5 7.5 0 0 1 15 0Z" /></svg>
           <input id="facility-search" ref="searchInput" v-model="query" type="search" autocomplete="off" enterkeyhint="search" placeholder="Name, address, ZIP..." @keydown.down.prevent="focusFirstResult" />
           <button v-if="query" type="button" class="clear-search" aria-label="Clear facility search" @click="clearSearch">x</button>
-          <button type="button" class="filter-menu-button" :class="{ active: areaBounds || enabledRatings.size < ratingLabels.length }" aria-label="Filters and map area" :aria-expanded="filterMenuOpen" aria-controls="filter-panel" @click="filterMenuOpen = !filterMenuOpen">
+          <button type="button" class="filter-menu-button" :class="{ active: enabledRatings.size < ratingLabels.length }" aria-label="Rating filters" :aria-expanded="filterMenuOpen" aria-controls="filter-panel" @click="filterMenuOpen = !filterMenuOpen">
             <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M4 7h16M7 12h10M10 17h4" /></svg>
           </button>
         </div>
@@ -310,10 +290,6 @@ onBeforeUnmount(() => {
             <button v-for="rating in ratingLabels" :key="rating" type="button" class="filter-chip" :class="[ratingClass(rating), { off: !enabledRatings.has(rating) }]" :aria-pressed="enabledRatings.has(rating)" @click="toggleRating(rating)">
               <span class="rating-dot" />{{ rating }}<span class="count">{{ ratingCounts[rating] }}</span>
             </button>
-          </div>
-          <div class="area-actions">
-            <button v-if="mapAreaChanged || !areaBounds" type="button" @click="searchCurrentArea">Search this area</button>
-            <button v-if="areaBounds" type="button" @click="resetAreaFilter">Show all county</button>
           </div>
         </div>
       </div>
@@ -329,8 +305,7 @@ onBeforeUnmount(() => {
 
         <div v-if="!selectedFacility" class="explorer">
         <div class="results-summary" aria-live="polite">
-          <span v-if="areaBounds">Showing facilities in the selected map area</span>
-          <span v-else>Showing all of King County</span>
+          <span>Showing all of King County</span>
           <span v-if="rankedFacilities.length > RESULT_LIMIT">| showing first {{ RESULT_LIMIT }}</span>
         </div>
         <div v-if="loading" class="state"><span class="spinner" /> Loading facilities...</div>

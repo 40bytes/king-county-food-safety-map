@@ -24,7 +24,7 @@ A fresh checkout works offline after dependencies are installed: if `public/data
 
 ## Architecture and data flow
 
-The Vue 3 single-page app loads a compact build-time facility snapshot and indexes it locally. Tokenized search, ranking, rating and optional current-map-area filters, and MapLibre's native GeoJSON clustering all run in the browser. On mobile, filters are tucked behind the search control and results start in a collapsed three-state bottom sheet. Selecting a facility fetches its qualifying inspections from ArcGIS layer 1; opening an inspection fetches violations from layer 2. Deep links use `?facility={Business_Record_ID}` and the History API.
+The Vue 3 single-page app loads a compact build-time facility snapshot and indexes it locally. Tokenized search, ranking, rating filters, and MapLibre's native GeoJSON clustering all run in the browser. On mobile, rating filters are tucked behind the search control and results start in a collapsed three-state bottom sheet. Selecting a facility fetches its qualifying inspections from ArcGIS layer 1; opening an inspection fetches violations from layer 2. Deep links use `?facility={Business_Record_ID}` and the History API.
 
 ### Mobile bottom sheet
 
