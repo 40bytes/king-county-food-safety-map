@@ -9,6 +9,7 @@ import { ratingLabels, type Facility, type Inspection, type Rating, type Violati
 
 const RESULT_LIMIT = 150
 const mapElement = ref<HTMLDivElement>()
+const searchInput = ref<HTMLInputElement>()
 const query = ref('')
 const debouncedQuery = ref('')
 const facilities = ref<Facility[]>([])
@@ -18,6 +19,9 @@ const loading = ref(true)
 const loadError = ref('')
 const synthetic = ref(false)
 const shareStatus = ref('')
+const sheetState = ref<'collapsed' | 'half' | 'expanded'>('half')
+const areaBounds = ref<{ west: number; east: number; south: number; north: number } | null>(null)
+const mapAreaChanged = ref(false)
 let map: MapLibreMap | undefined
 let debounceTimer: ReturnType<typeof setTimeout> | undefined
 let inspectionController: AbortController | undefined
@@ -28,7 +32,12 @@ const inspectionStates = reactive<Record<string, InspectionState>>({})
 const violationStates = reactive<Record<string, ViolationState>>({})
 
 const selectedFacility = computed(() => facilities.value.find(({ recordId }) => recordId === selectedRecordId.value) ?? null)
-const rankedFacilities = computed(() => filterAndRankFacilities(facilities.value, debouncedQuery.value, enabledRatings.value))
+const searchedFacilities = computed(() => filterAndRankFacilities(facilities.value, debouncedQuery.value, enabledRatings.value))
+const rankedFacilities = computed(() => {
+  const bounds = areaBounds.value
+  return bounds ? searchedFacilities.value.filter(({ longitude, latitude }) =>
+    longitude >= bounds.west && longitude <= bounds.east && latitude >= bounds.south && latitude <= bounds.north) : searchedFacilities.value
+})
 const visibleFacilities = computed(() => rankedFacilities.value.slice(0, RESULT_LIMIT))
 const ratingCounts = computed(() => Object.fromEntries(ratingLabels.map((rating) => [
   rating, facilities.value.filter((facility) => normalizeGrade(facility.grade) === rating).length,
@@ -41,6 +50,7 @@ watch(query, (value) => {
 })
 
 watch(rankedFacilities, updateMapData)
+watch(selectedFacility, updateSelectedMapData)
 
 function facilityGeoJson() {
   return {
@@ -62,6 +72,19 @@ function updateMapData(): void {
   source?.setData(facilityGeoJson())
 }
 
+function updateSelectedMapData(): void {
+  const source = map?.getSource('selected-facility') as GeoJSONSource | undefined
+  const facility = selectedFacility.value
+  source?.setData({
+    type: 'FeatureCollection',
+    features: facility ? [{ type: 'Feature', geometry: { type: 'Point', coordinates: [facility.longitude, facility.latitude] }, properties: {} }] : [],
+  })
+}
+
+function reducedMotion(): boolean {
+  return window.matchMedia('(prefers-reduced-motion: reduce)').matches
+}
+
 function initializeMap(): void {
   if (!mapElement.value) return
   map = new maplibregl.Map({
@@ -71,10 +94,15 @@ function initializeMap(): void {
     attributionControl: { compact: true },
   })
   map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-right')
+  map.addControl(new maplibregl.GeolocateControl({
+    positionOptions: { enableHighAccuracy: true },
+    trackUserLocation: false,
+  }), 'top-right')
+  map.on('moveend', () => { mapAreaChanged.value = true })
   map.on('load', () => {
-    map?.getCanvas().setAttribute('aria-label', 'Map of King County food facilities')
-    map?.getCanvas().setAttribute('role', 'img')
+    map?.getCanvas().setAttribute('aria-label', 'Interactive map of King County food facilities. Use arrow keys to pan and plus or minus to zoom.')
     map?.addSource('facilities', { type: 'geojson', data: facilityGeoJson(), cluster: true, clusterRadius: 45, clusterMaxZoom: 13 })
+    map?.addSource('selected-facility', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } })
     map?.addLayer({
       id: 'clusters', type: 'circle', source: 'facilities', filter: ['has', 'point_count'],
       paint: { 'circle-color': '#173f43', 'circle-radius': ['step', ['get', 'point_count'], 19, 50, 24, 250, 30], 'circle-stroke-color': '#fff', 'circle-stroke-width': 2 },
@@ -94,13 +122,19 @@ function initializeMap(): void {
       id: 'facility-symbols', type: 'symbol', source: 'facilities', filter: ['!', ['has', 'point_count']],
       layout: { 'text-field': ['get', 'symbol'], 'text-size': 10, 'text-font': ['Noto Sans Bold'] }, paint: { 'text-color': '#fff' },
     })
+    map?.addLayer({
+      id: 'selected-halo', type: 'circle', source: 'selected-facility',
+      paint: { 'circle-radius': 18, 'circle-color': '#fff', 'circle-opacity': 0.9, 'circle-stroke-color': '#102a2e', 'circle-stroke-width': 4 },
+    })
+    map?.addLayer({ id: 'selected-center', type: 'circle', source: 'selected-facility', paint: { 'circle-radius': 7, 'circle-color': '#e85d3f' } })
+    updateSelectedMapData()
     map?.on('click', 'clusters', async (event) => {
       const feature = map?.queryRenderedFeatures(event.point, { layers: ['clusters'] })[0]
       const clusterId = feature?.properties?.cluster_id
       if (typeof clusterId !== 'number' || feature?.geometry.type !== 'Point') return
       const source = map?.getSource('facilities') as GeoJSONSource | undefined
       const zoom = await source?.getClusterExpansionZoom(clusterId)
-      if (zoom !== undefined) map?.easeTo({ center: feature.geometry.coordinates as [number, number], zoom })
+      if (zoom !== undefined) map?.easeTo({ center: feature.geometry.coordinates as [number, number], zoom, duration: reducedMotion() ? 0 : 500 })
     })
     map?.on('click', 'facility-points', (event) => selectFromMap(event.features?.[0]?.properties?.recordId))
     for (const layer of ['clusters', 'facility-points', 'facility-symbols']) {
@@ -118,6 +152,7 @@ function selectFromMap(recordId: unknown): void {
 function selectFacility(recordId: string, updateHistory = true): void {
   if (!facilities.value.some((facility) => facility.recordId === recordId)) return
   selectedRecordId.value = recordId
+  sheetState.value = 'expanded'
   shareStatus.value = ''
   if (updateHistory) setUrlFacility(recordId)
   void loadInspections(recordId)
@@ -126,6 +161,7 @@ function selectFacility(recordId: string, updateHistory = true): void {
 
 function closeDetails(updateHistory = true): void {
   selectedRecordId.value = null
+  sheetState.value = 'half'
   inspectionController?.abort()
   if (updateHistory) setUrlFacility(null)
 }
@@ -145,7 +181,30 @@ function restoreFromUrl(): void {
 
 function flyToSelected(animate = true): void {
   if (!selectedFacility.value || !map?.loaded()) return
-  map.easeTo({ center: [selectedFacility.value.longitude, selectedFacility.value.latitude], zoom: Math.max(map.getZoom(), 14), duration: animate ? 650 : 0, padding: window.innerWidth < 760 ? { bottom: 260, top: 0, left: 0, right: 0 } : { left: 420, top: 0, bottom: 0, right: 0 } })
+  map.easeTo({ center: [selectedFacility.value.longitude, selectedFacility.value.latitude], zoom: Math.max(map.getZoom(), 14), duration: animate && !reducedMotion() ? 650 : 0, padding: window.innerWidth < 760 ? { bottom: 320, top: 160, left: 0, right: 0 } : { left: 430, top: 0, bottom: 0, right: 0 } })
+}
+
+function searchCurrentArea(): void {
+  if (!map) return
+  const bounds = map.getBounds()
+  areaBounds.value = { west: bounds.getWest(), east: bounds.getEast(), south: bounds.getSouth(), north: bounds.getNorth() }
+  mapAreaChanged.value = false
+}
+
+function resetAreaFilter(): void {
+  areaBounds.value = null
+  mapAreaChanged.value = false
+}
+
+function clearSearch(): void {
+  query.value = ''
+  debouncedQuery.value = ''
+  searchInput.value?.focus()
+}
+
+function cycleSheet(): void {
+  const states = ['collapsed', 'half', 'expanded'] as const
+  sheetState.value = states[(states.indexOf(sheetState.value) + 1) % states.length] ?? 'half'
 }
 
 async function loadInspections(recordId: string): Promise<void> {
@@ -186,6 +245,7 @@ function toggleRating(rating: Rating): void {
 }
 
 function focusFirstResult(): void {
+  sheetState.value = 'expanded'
   void nextTick(() => document.querySelector<HTMLButtonElement>('[data-result]')?.focus())
 }
 
@@ -231,26 +291,43 @@ onBeforeUnmount(() => {
 
 <template>
   <main class="app-shell">
+    <section class="map-panel" aria-label="Interactive facility map"><div ref="mapElement" class="map" /></section>
     <section class="sidebar" :class="{ 'has-details': selectedFacility }" aria-label="Food facility explorer">
       <header class="masthead">
-        <p class="eyebrow">Independent community project | Unofficial</p>
-        <h1>King County<br /><span>Food Safety Map</span></h1>
-        <p class="intro">Explore public food safety ratings and inspection records across King County.</p>
+        <div><p class="eyebrow">Independent and unofficial</p><h1>King County <span>Food Safety</span></h1></div>
+        <p class="intro">Explore public ratings and inspection records.</p>
       </header>
 
-      <div v-if="!selectedFacility" class="explorer">
+      <div class="search-controls">
         <label class="search-label" for="facility-search">Search facilities</label>
         <div class="search-wrap">
           <svg aria-hidden="true" viewBox="0 0 24 24"><path d="m21 21-4.35-4.35m2.35-5.15A7.5 7.5 0 1 1 4 11.5a7.5 7.5 0 0 1 15 0Z" /></svg>
-          <input id="facility-search" v-model="query" type="search" autocomplete="off" placeholder="Name, address, ZIP, record ID..." @keydown.down.prevent="focusFirstResult" />
+          <input id="facility-search" ref="searchInput" v-model="query" type="search" autocomplete="off" enterkeyhint="search" placeholder="Name, address, ZIP..." @keydown.down.prevent="focusFirstResult" />
+          <button v-if="query" type="button" class="clear-search" aria-label="Clear facility search" @click="clearSearch">x</button>
         </div>
         <div class="filters" aria-label="Filter by food safety rating">
           <button v-for="rating in ratingLabels" :key="rating" type="button" class="filter-chip" :class="[ratingClass(rating), { off: !enabledRatings.has(rating) }]" :aria-pressed="enabledRatings.has(rating)" @click="toggleRating(rating)">
-            <span class="rating-dot" />{{ rating }} <span class="count">{{ ratingCounts[rating] }}</span>
+            <span class="rating-dot" />{{ rating }}<span class="count">{{ ratingCounts[rating] }}</span>
           </button>
         </div>
+        <div class="area-actions">
+          <button v-if="mapAreaChanged || !areaBounds" type="button" @click="searchCurrentArea">Search this area</button>
+          <button v-if="areaBounds" type="button" @click="resetAreaFilter">Show all county</button>
+        </div>
+      </div>
+
+      <section class="sheet" :class="`sheet-${sheetState}`" :aria-label="selectedFacility ? 'Facility details' : 'Facility results'">
+        <button type="button" class="sheet-header" :aria-expanded="sheetState !== 'collapsed'" :aria-label="`Results sheet: ${sheetState}. Activate to change size.`" @click="cycleSheet">
+          <span class="drag-handle" aria-hidden="true" />
+          <span v-if="selectedFacility">Facility details</span>
+          <span v-else><strong>{{ rankedFacilities.length.toLocaleString() }}</strong> {{ rankedFacilities.length === 1 ? 'facility' : 'facilities' }}</span>
+          <span class="sheet-state">{{ sheetState }}</span>
+        </button>
+
+        <div v-if="!selectedFacility" class="explorer">
         <div class="results-summary" aria-live="polite">
-          <strong>{{ rankedFacilities.length.toLocaleString() }}</strong> {{ rankedFacilities.length === 1 ? 'facility' : 'facilities' }}
+          <span v-if="areaBounds">Showing facilities in the selected map area</span>
+          <span v-else>Showing all of King County</span>
           <span v-if="rankedFacilities.length > RESULT_LIMIT">| showing first {{ RESULT_LIMIT }}</span>
         </div>
         <div v-if="loading" class="state"><span class="spinner" /> Loading facilities...</div>
@@ -266,9 +343,9 @@ onBeforeUnmount(() => {
           </li>
         </ol>
         <p v-if="synthetic" class="fixture-notice"><strong>Demo mode:</strong> showing clearly synthetic facilities because a generated county snapshot is unavailable.</p>
-      </div>
+        </div>
 
-      <article v-else class="details">
+        <article v-else class="details">
         <button type="button" class="back-button" @click="closeDetails()">&lt;- Back to results</button>
         <div class="detail-heading">
           <span class="large-grade" :class="ratingClass(normalizeGrade(selectedFacility.grade))">{{ normalizeGrade(selectedFacility.grade).charAt(0) }}</span>
@@ -310,9 +387,9 @@ onBeforeUnmount(() => {
             </details>
           </div>
         </section>
-      </article>
-      <footer>Data: <a href="https://kingcounty.gov/en/dept/dph/health-safety/food-safety" target="_blank" rel="noopener">Public Health - Seattle &amp; King County</a>. Not affiliated with or endorsed by King County.</footer>
+        </article>
+        <footer>Data: <a href="https://kingcounty.gov/en/dept/dph/health-safety/food-safety" target="_blank" rel="noopener">Public Health - Seattle &amp; King County</a>. Not affiliated with or endorsed by King County.</footer>
+      </section>
     </section>
-    <section class="map-panel" aria-label="Facility map"><div ref="mapElement" class="map" /></section>
   </main>
 </template>

@@ -24,7 +24,7 @@ A fresh checkout works offline after dependencies are installed: if `public/data
 
 ## Architecture and data flow
 
-The Vue 3 single-page app loads a compact build-time facility snapshot and indexes it locally. Search, ranking, rating filters, and MapLibre's native GeoJSON clustering all run in the browser. Selecting a facility fetches its qualifying inspections from ArcGIS layer 1; opening an inspection fetches violations from layer 2. Deep links use `?facility={Business_Record_ID}` and the History API.
+The Vue 3 single-page app loads a compact build-time facility snapshot and indexes it locally. Tokenized search, ranking, rating and optional current-map-area filters, and MapLibre's native GeoJSON clustering all run in the browser. On mobile, results use a three-state bottom sheet; tap its header to cycle collapsed, half, and expanded states. Selecting a facility fetches its qualifying inspections from ArcGIS layer 1; opening an inspection fetches violations from layer 2. Deep links use `?facility={Business_Record_ID}` and the History API.
 
 `scripts/generate-data.mjs` requests layer 0 in deterministic `OBJECTID ASC` pages of 2,000, limits records to active businesses, requests EPSG:4326 geometry, validates essential fields, and atomically writes `public/data/facilities.json`. That output is intentionally ignored by Git. Generation is not part of `build`, so an upstream outage cannot break a build from a clean checkout.
 

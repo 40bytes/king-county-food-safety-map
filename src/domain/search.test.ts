@@ -20,6 +20,23 @@ describe('facility search', () => {
     expect(searchScore(facility('Cafe'), 'REC-1')).not.toBeNull()
     expect(searchScore(facility('Cafe'), '98101')).not.toBeNull()
   })
+  it('normalizes punctuation, spacing, case, and diacritics', () => {
+    expect(searchScore(facility('Cafe de l\u2019Ete', 'Good', { address: '123 Jos\u00e9-Way' }), 'cafe l ete')).not.toBeNull()
+    expect(searchScore(facility('Cafe', 'Good', { recordId: 'REC-1' }), 'rec 1')).not.toBeNull()
+    expect(searchScore(facility('Cafe', 'Good', { address: 'Jose Way' }), 'Jos\u00e9---Way')).not.toBeNull()
+  })
+  it('requires every query token while allowing tokens across fields', () => {
+    expect(searchScore(facility('Pine Cafe', 'Good', { city: 'Bellevue' }), 'pine bellevue')).not.toBeNull()
+    expect(searchScore(facility('Pine Cafe', 'Good', { city: 'Seattle' }), 'pine bellevue')).toBeNull()
+  })
+  it('ranks exact and prefix multi-word names above cross-field matches', () => {
+    const matches = filterAndRankFacilities([
+      facility('Market', 'Good', { objectId: 1, address: 'Lake City Way' }),
+      facility('Lake City Bakery', 'Good', { objectId: 2 }),
+      facility('Lake City', 'Good', { objectId: 3 }),
+    ], 'lake city', new Set<Rating>(['Good']))
+    expect(matches.map(({ name }) => name)).toEqual(['Lake City', 'Lake City Bakery', 'Market'])
+  })
   it('filters using normalized ratings', () => {
     expect(filterAndRankFacilities([facility('A', 'excellent'), facility('B', null)], '', new Set<Rating>(['Excellent']))).toHaveLength(1)
   })
